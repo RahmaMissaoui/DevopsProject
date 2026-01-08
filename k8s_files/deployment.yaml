@@ -1,3 +1,26 @@
+# # ---
+# # apiVersion: apps/v1
+# # kind: Deployment
+# # metadata:
+# #   name: devops-app
+# #   labels:
+# #     app: devops-app
+# # spec:
+# #   replicas: 1
+# #   selector:
+# #     matchLabels:
+# #       app: devops-app
+# #   template:
+# #     metadata:
+# #       labels:
+# #         app: devops-app
+# #     spec:
+# #       containers:
+# #       - name: devops-container
+# #         image: 637423542227.dkr.ecr.us-east-1.amazonaws.com/devops-project:latest
+# #         ports:
+# #         - containerPort: 3000
+# # ...
 # ---
 # apiVersion: apps/v1
 # kind: Deployment
@@ -6,7 +29,7 @@
 #   labels:
 #     app: devops-app
 # spec:
-#   replicas: 1
+#   replicas: 2
 #   selector:
 #     matchLabels:
 #       app: devops-app
@@ -20,7 +43,7 @@
 #         image: 637423542227.dkr.ecr.us-east-1.amazonaws.com/devops-project:latest
 #         ports:
 #         - containerPort: 3000
-# ...
+# ---
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,7 +53,7 @@ metadata:
   labels:
     app: devops-app
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: devops-app
@@ -41,28 +64,16 @@ spec:
     spec:
       containers:
       - name: devops-container
-        image: 637423542227.dkr.ecr.us-east-1.amazonaws.com/devops-project:latest
+        image: 637423542227.dkr.ecr.us-east-1.amazonaws.com/devops-project-2:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 3000
           protocol: TCP
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
+            memory: "256Mi"     # Minimum memory
+            cpu: "100m"         # Minimum CPU
           limits:
-            memory: "256Mi"
-            cpu: "200m"
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 3000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 5
+            memory: "512Mi"     # Maximum memory (increased!)
+            cpu: "500m"         # Maximum CPU (increased!)
 ---
