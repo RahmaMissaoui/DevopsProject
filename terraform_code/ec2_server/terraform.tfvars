@@ -9,7 +9,7 @@ volume_size   = "30"         # Max 100GB per Learner Lab restrictions
 key_name = "vockey"
 
 # Server Name
-server_name = "Jenkins-DevOps-Server"
+server_name = "DevOps-Server"
 
 # AMI for Ubuntu 22.04 in us-east-1
 ami = "ami-0ecb62995f68bb549"  

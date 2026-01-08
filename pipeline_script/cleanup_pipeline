@@ -3,69 +3,210 @@ pipeline {
 
     environment {
         KUBECTL = '/usr/local/bin/kubectl'
+        HELM = '/usr/local/bin/helm'
+        AWS_DEFAULT_REGION = 'us-east-1'
     }
 
     parameters {
-        string(name: 'CLUSTER_NAME', defaultValue: 'amazon-prime-cluster', description: 'Enter your EKS cluster name')
+        string(name: 'CLUSTER_NAME', defaultValue: 'devops-cluster', description: 'EKS cluster name')
+        choice(name: 'CLEANUP_LEVEL', choices: ['APPS_ONLY', 'APPS_AND_MONITORING', 'FULL_CLUSTER'], description: 'What to clean up?')
+        booleanParam(name: 'DELETE_ECR_REPO', defaultValue: false, description: 'Delete ECR repository?')
+        booleanParam(name: 'CONFIRM_DELETION', defaultValue: false, description: 'I understand this will delete resources')
     }
 
     stages {
 
-        stage("Login to EKS") {
+        stage('Validate Confirmation') {
             steps {
                 script {
-                    withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
-                                     string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
-                        sh "aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}"
+                    if (!params.CONFIRM_DELETION) {
+                        error("Cleanup cancelled - CONFIRM_DELETION must be checked")
                     }
+                    echo "=== CLEANUP LEVEL: ${params.CLEANUP_LEVEL} ==="
+                }
+            }
+        }
+
+        stage('Configure kubectl') {
+            steps {
+                script {
+                    echo "Configuring kubectl for cluster: ${params.CLUSTER_NAME}"
+                    sh "aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${params.CLUSTER_NAME}"
+                    sh "kubectl cluster-info"
                 }
             }
         }
         
-        stage('Cleanup K8s Resources') {
+        stage('Cleanup Application') {
+            when {
+                expression { 
+                    params.CLEANUP_LEVEL in ['APPS_ONLY', 'APPS_AND_MONITORING', 'FULL_CLUSTER'] 
+                }
+            }
             steps {
                 script {
-                    // Step 1: Delete services and deployments
-                    sh 'kubectl delete svc kubernetes || true'
-                    sh 'kubectl delete deploy pandacloud-app || true'
-                    sh 'kubectl delete svc pandacloud-app || true'
-
-                    // Step 2: Delete ArgoCD installation and namespace
-                    sh 'kubectl delete -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || true'
-                    sh 'kubectl delete namespace argocd || true'
-
-                    // Step 3: List and uninstall Helm releases in prometheus namespace
-                    sh 'helm list -n prometheus || true'
-                    sh 'helm uninstall kube-stack -n prometheus || true'
+                    echo "=== Cleaning up Application Resources ==="
                     
-                    // Step 4: Delete prometheus namespace
-                    sh 'kubectl delete namespace prometheus || true'
+                    // Delete application deployment and service
+                    sh '''
+                    kubectl delete deployment devops-app -n default || true
+                    kubectl delete service devops-app -n default || true
+                    
+                    # Wait for LoadBalancer to be deleted
+                    echo "Waiting for LoadBalancer deletion..."
+                    sleep 30
+                    
+                    # Verify deletion
+                    kubectl get all -n default
+                    '''
+                }
+            }
+        }
 
-                    // Step 5: Remove Helm repositories
-                    sh 'helm repo remove stable || true'
-                    sh 'helm repo remove prometheus-community || true'
+        stage('Cleanup CloudWatch') {
+            when {
+                expression { 
+                    params.CLEANUP_LEVEL in ['APPS_AND_MONITORING', 'FULL_CLUSTER'] 
+                }
+            }
+            steps {
+                script {
+                    echo "=== Cleaning up CloudWatch Container Insights ==="
+                    
+                    sh '''
+                    # Delete CloudWatch agents
+                    kubectl delete namespace amazon-cloudwatch || true
+                    
+                    # Wait for cleanup
+                    sleep 10
+                    '''
+                }
+            }
+        }
+        
+        stage('Cleanup ArgoCD') {
+            when {
+                expression { 
+                    params.CLEANUP_LEVEL in ['APPS_AND_MONITORING', 'FULL_CLUSTER'] 
+                }
+            }
+            steps {
+                script {
+                    echo "=== Cleaning up ArgoCD ==="
+                    
+                    sh '''
+                    # Delete ArgoCD application first
+                    kubectl delete application devops-project -n argocd || true
+                    
+                    # Delete ArgoCD installation
+                    kubectl delete -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || true
+                    
+                    # Wait for resources to terminate
+                    sleep 30
+                    
+                    # Delete namespace
+                    kubectl delete namespace argocd || true
+                    '''
+                }
+            }
+        }
+
+        stage('Cleanup Prometheus & Grafana') {
+            when {
+                expression { 
+                    params.CLEANUP_LEVEL in ['APPS_AND_MONITORING', 'FULL_CLUSTER'] 
+                }
+            }
+            steps {
+                script {
+                    echo "=== Cleaning up Prometheus & Grafana ==="
+                    
+                    sh '''
+                    # List current Helm releases
+                    helm list -n prometheus
+                    
+                    # Uninstall Prometheus stack (correct release name)
+                    helm uninstall kube-prometheus-stack -n prometheus || true
+                    
+                    # Wait for resources to terminate
+                    sleep 30
+                    
+                    # Delete namespace
+                    kubectl delete namespace prometheus || true
+                    
+                    # Remove Helm repositories
+                    helm repo remove stable || true
+                    helm repo remove prometheus-community || true
+                    '''
+                }
+            }
+        }
+
+        stage('Cleanup ECR Repository') {
+            when {
+                expression { params.DELETE_ECR_REPO }
+            }
+            steps {
+                script {
+                    echo "=== Deleting ECR Repository ==="
+                    
+                    sh '''
+                    # Delete ECR repository with correct name
+                    aws ecr delete-repository \
+                      --repository-name devops-project \
+                      --region us-east-1 \
+                      --force || echo "Repository not found or already deleted"
+                    '''
+                }
+            }
+        }
+
+        stage('Final Verification') {
+            steps {
+                script {
+                    echo "=== Verifying Cleanup ==="
+                    
+                    sh '''
+                    echo "Remaining resources in default namespace:"
+                    kubectl get all -n default
+                    
+                    echo ""
+                    echo "Remaining namespaces:"
+                    kubectl get namespaces | grep -E "argocd|prometheus|amazon-cloudwatch" || echo "All monitoring namespaces cleaned"
+                    
+                    echo ""
+                    echo "Remaining LoadBalancers:"
+                    kubectl get svc -A -o wide | grep LoadBalancer || echo "No LoadBalancers found"
+                    
+                    echo ""
+                    echo "ECR Repositories:"
+                    aws ecr describe-repositories --region us-east-1 --query 'repositories[*].repositoryName' || true
+                    '''
                 }
             }
         }
 		
-        stage('Delete ECR Repository and KMS Keys') {
-            steps {
-                script {
-                    // Step 1: Delete ECR Repository
-                    sh '''
-                    aws ecr delete-repository --repository-name amazon-prime --region us-east-1 --force
-                    '''
+    }
 
-                    // Step 2: Delete KMS Keys
-                    sh '''
-                    for key in $(aws kms list-keys --region us-east-1 --query "Keys[*].KeyId" --output text); do
-                        aws kms disable-key --key-id $key --region us-east-1
-                        aws kms schedule-key-deletion --key-id $key --pending-window-in-days 7 --region us-east-1
-                    done
-                    '''
+    post {
+        success {
+            echo 'Cleanup completed successfully!'
+            echo "Cleanup level: ${params.CLEANUP_LEVEL}"
+            script {
+                if (params.CLEANUP_LEVEL == 'FULL_CLUSTER') {
+                    echo "Remember to run 'terraform destroy' to delete EKS cluster and VPC"
                 }
             }
-        }		
-		
+        }
+        failure {
+            echo 'Cleanup failed! Some resources may still exist.'
+            echo 'Check logs above and manually verify resources.'
+        }
+        always {
+            echo "=== Cleanup Summary ==="
+            echo "Cluster: ${params.CLUSTER_NAME}"
+            echo "Level: ${params.CLEANUP_LEVEL}"
+            echo "ECR Deleted: ${params.DELETE_ECR_REPO}"
+        }
     }
 }
