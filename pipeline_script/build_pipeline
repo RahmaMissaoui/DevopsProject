@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     parameters {
-        string(name: 'ECR_REPO_NAME', defaultValue: 'devops-project-2', description: 'Enter repository name')
+        string(name: 'ECR_REPO_NAME', defaultValue: 'devops-project', description: 'Enter repository name')
         string(name: 'AWS_ACCOUNT_ID', defaultValue: '637423542227', description: 'Enter AWS Account ID') 
     }
     
@@ -19,7 +19,7 @@ pipeline {
     stages {
         stage('1. Git Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/RahmaMissaoui/DevopsProject2.git'
+                git branch: 'main', url: 'https://github.com/RahmaMissaoui/DevopsProject.git'
             }
         }
         
@@ -28,8 +28,8 @@ pipeline {
                 withSonarQubeEnv('sonar-server') {
                     sh """
                     $SCANNER_HOME/bin/sonar-scanner \
-                    -Dsonar.projectName=devops-project-2 \
-                    -Dsonar.projectKey=devops-project-2
+                    -Dsonar.projectName=devops-project \
+                    -Dsonar.projectKey=devops-project
                     """
                 }
             }

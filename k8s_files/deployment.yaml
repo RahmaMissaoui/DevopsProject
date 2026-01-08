@@ -1,23 +1,68 @@
+# ---
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: devops-app
+#   labels:
+#     app: devops-app
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: devops-app
+#   template:
+#     metadata:
+#       labels:
+#         app: devops-app
+#     spec:
+#       containers:
+#       - name: devops-container
+#         image: 637423542227.dkr.ecr.us-east-1.amazonaws.com/devops-project:latest
+#         ports:
+#         - containerPort: 3000
+# ...
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: pandacloud-app
+  name: devops-app
+  namespace: default
   labels:
-    app: pandacloud-app
+    app: devops-app
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
-      app: pandacloud-app
+      app: devops-app
   template:
     metadata:
       labels:
-        app: pandacloud-app
+        app: devops-app
     spec:
       containers:
-      - name: pandacloud-container
-        image: 309395755719.dkr.ecr.us-east-1.amazonaws.com/amazon-prime:latest
+      - name: devops-container
+        image: 637423542227.dkr.ecr.us-east-1.amazonaws.com/devops-project:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
-...
+          protocol: TCP
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---

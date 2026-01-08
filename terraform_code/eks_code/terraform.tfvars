@@ -1,6 +1,6 @@
 # You can override defaults here
 region         = "us-east-1"
-cluster_name   = "amazon-prime-cluster"
+cluster_name   = "devops-cluster"
 cluster_version = "1.30"
 
 # Node configuration

@@ -12,7 +12,7 @@ provider "aws" {
   region = var.region
 }
 
-# Data source to get existing LabRole (used for both cluster and nodes)
+# Data source to get existing LabRole
 data "aws_iam_role" "lab_role" {
   name = "LabRole"
 }
@@ -28,10 +28,15 @@ resource "aws_security_group" "eks_cluster" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
   }
 
   tags = {
     Name = "${var.cluster_name}-cluster-sg"
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -41,40 +46,46 @@ resource "aws_security_group" "eks_nodes" {
   description = "Security group for EKS worker nodes"
   vpc_id      = aws_vpc.main.id
 
-  # Allow nodes to communicate with each other
-  ingress {
-    description = "Allow nodes to communicate with each other"
-    from_port   = 0
-    to_port     = 65535
-    protocol    = "-1"
-    self        = true
-  }
-
-  # Allow worker nodes to receive communication from cluster control plane
-  ingress {
-    description     = "Allow pods to communicate with the cluster API Server"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [aws_security_group.eks_cluster.id]
-  }
-
-  # Allow all outbound traffic
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
   }
 
   tags = {
     Name                                        = "${var.cluster_name}-nodes-sg"
     "kubernetes.io/cluster/${var.cluster_name}" = "owned"
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-# Allow cluster control plane to communicate with worker nodes
-resource "aws_security_group_rule" "cluster_to_nodes" {
+# Rules added AFTER both security groups exist (breaks circular dependency)
+resource "aws_security_group_rule" "cluster_ingress_nodes_443" {
+  description              = "Allow pods to communicate with cluster API"
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster.id
+  source_security_group_id = aws_security_group.eks_nodes.id
+}
+
+resource "aws_security_group_rule" "nodes_ingress_self" {
+  description       = "Allow nodes to communicate with each other"
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.eks_nodes.id
+  self              = true
+}
+
+resource "aws_security_group_rule" "nodes_ingress_cluster" {
   description              = "Allow cluster control plane to communicate with worker nodes"
   type                     = "ingress"
   from_port                = 1025
@@ -84,10 +95,20 @@ resource "aws_security_group_rule" "cluster_to_nodes" {
   source_security_group_id = aws_security_group.eks_cluster.id
 }
 
+resource "aws_security_group_rule" "nodes_ingress_cluster_443" {
+  description              = "Allow cluster control plane to communicate with pods"
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes.id
+  source_security_group_id = aws_security_group.eks_cluster.id
+}
+
 # EKS Cluster
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
-  role_arn = data.aws_iam_role.lab_role.arn  # USE LabRole for cluster
+  role_arn = data.aws_iam_role.lab_role.arn
   version  = var.cluster_version
 
   vpc_config {
@@ -97,10 +118,12 @@ resource "aws_eks_cluster" "main" {
     security_group_ids      = [aws_security_group.eks_cluster.id]
   }
 
-  # Enable EKS Cluster Logging
-  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  enabled_cluster_log_types = ["api", "audit"]
 
   depends_on = [
+    aws_security_group.eks_cluster,
+    aws_security_group.eks_nodes,
+    aws_security_group_rule.cluster_ingress_nodes_443,
     aws_internet_gateway.main,
     aws_subnet.public,
     aws_subnet.private
@@ -115,7 +138,7 @@ resource "aws_eks_cluster" "main" {
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${var.cluster_name}-node-group"
-  node_role_arn   = data.aws_iam_role.lab_role.arn  # USE LabRole for nodes
+  node_role_arn   = data.aws_iam_role.lab_role.arn
   subnet_ids      = aws_subnet.private[*].id
 
   scaling_config {
@@ -128,13 +151,10 @@ resource "aws_eks_node_group" "main" {
   capacity_type  = var.capacity_type
   disk_size      = 20
 
-  # Ensure node group is updated before destroying old one
   update_config {
     max_unavailable = 1
   }
 
-  # IMPORTANT: Respect Learner Lab limits
-  # Max 9 instances total, max 32 vCPUs
   lifecycle {
     create_before_destroy = false
     ignore_changes        = [scaling_config[0].desired_size]
@@ -147,26 +167,31 @@ resource "aws_eks_node_group" "main" {
 
   depends_on = [
     aws_eks_cluster.main,
-    aws_nat_gateway.main
+    aws_nat_gateway.main,
+    aws_security_group_rule.nodes_ingress_cluster
   ]
 }
 
 # EKS Add-ons
 resource "aws_eks_addon" "coredns" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "coredns"
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "coredns"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
   
-  depends_on = [
-    aws_eks_node_group.main
-  ]
+  depends_on = [aws_eks_node_group.main]
 }
 
 resource "aws_eks_addon" "kube_proxy" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "kube-proxy"
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "kube-proxy"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
 }
 
 resource "aws_eks_addon" "vpc_cni" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "vpc-cni"
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "vpc-cni"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
 }
