@@ -3,6 +3,8 @@ pipeline {
 
     environment {
         KUBECTL = '/usr/local/bin/kubectl'
+        HELM = '/usr/local/bin/helm'
+        AWS_DEFAULT_REGION = 'us-east-1'
     }
 
     parameters {
@@ -10,51 +12,131 @@ pipeline {
     }
 
     stages {
-        stage("Login to EKS") {
+        
+        stage('1. Verify AWS Access') {
             steps {
                 script {
-                    withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
-                                     string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
-                        sh "aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}"
-                    }
+                    echo '=== Verifying AWS Credentials ==='
+                    sh 'aws sts get-caller-identity'
+                    sh 'aws eks list-clusters --region us-east-1'
+                }
+            }
+        }
+        
+        stage('2. Configure kubectl for EKS') {
+            steps {
+                script {
+                    echo "=== Configuring kubectl for cluster: ${params.CLUSTER_NAME} ==="
+                    // NO CREDENTIALS NEEDED - EC2 uses LabInstanceProfile
+                    sh "aws eks update-kubeconfig --region us-east-1 --name ${params.CLUSTER_NAME}"
+                    
+                    // Verify connection
+                    sh 'kubectl cluster-info'
+                    sh 'kubectl get nodes'
                 }
             }
         }
 
-        stage("Configure Prometheus & Grafana") {
+        stage('3. Install/Update Prometheus & Grafana') {
             steps {
                 script {
+                    echo '=== Configuring Prometheus & Grafana ==='
                     sh """
+                    # Add Helm repositories
                     helm repo add stable https://charts.helm.sh/stable || true
                     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-                    # Check if namespace 'prometheus' exists
-                    if kubectl get namespace prometheus > /dev/null 2>&1; then
-                        # If namespace exists, upgrade the Helm release
-                        helm upgrade stable prometheus-community/kube-prometheus-stack -n prometheus
+                    helm repo update
+                    
+                    # Create namespace if it doesn't exist
+                    kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
+                    
+                    # Check if release exists and install/upgrade accordingly
+                    if helm list -n prometheus | grep -q kube-prometheus-stack; then
+                        echo "Upgrading existing Prometheus stack..."
+                        helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack -n prometheus
                     else
-                        # If namespace does not exist, create it and install Helm release
-                        kubectl create namespace prometheus
-                        helm install stable prometheus-community/kube-prometheus-stack -n prometheus
+                        echo "Installing Prometheus stack..."
+                        helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n prometheus
                     fi
-                    kubectl patch svc stable-kube-prometheus-sta-prometheus -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
-                    kubectl patch svc stable-grafana -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
+                    
+                    # Wait for pods to be ready
+                    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n prometheus --timeout=300s || true
+                    
+                    # Expose services via LoadBalancer
+                    echo "Exposing Prometheus and Grafana..."
+                    kubectl patch svc kube-prometheus-stack-prometheus -n prometheus -p '{"spec": {"type": "LoadBalancer"}}' || true
+                    kubectl patch svc kube-prometheus-stack-grafana -n prometheus -p '{"spec": {"type": "LoadBalancer"}}' || true
+                    
+                    # Show service endpoints
+                    echo "=== Prometheus & Grafana Services ==="
+                    kubectl get svc -n prometheus
                     """
                 }
             }
         }
 
-        stage("Configure ArgoCD") {
+        stage('4. Install/Update ArgoCD') {
+            steps {
+                script {
+                    echo '=== Configuring ArgoCD ==='
+                    sh """
+                    # Create namespace if it doesn't exist
+                    kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+                    
+                    # Install ArgoCD
+                    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+                    
+                    # Wait for ArgoCD pods to be ready
+                    echo "Waiting for ArgoCD to be ready..."
+                    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+                    
+                    # Expose ArgoCD server via LoadBalancer
+                    kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+                    
+                    # Show ArgoCD service endpoint
+                    echo "=== ArgoCD Service ==="
+                    kubectl get svc argocd-server -n argocd
+                    """
+                }
+            }
+        }
+        
+        stage('5. Display Access Information') {
             steps {
                 script {
                     sh """
-                    # Install ArgoCD
-                    kubectl create namespace argocd || true
-                    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-                    kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+                    echo "========================================="
+                    echo "DEPLOYMENT COMPLETE!"
+                    echo "========================================="
+                    echo ""
+                    echo "=== Prometheus ==="
+                    kubectl get svc kube-prometheus-stack-prometheus -n prometheus -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' && echo ":9090"
+                    echo ""
+                    echo "=== Grafana ==="
+                    kubectl get svc kube-prometheus-stack-grafana -n prometheus -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' && echo ":3000"
+                    echo "Grafana default credentials: admin / prom-operator"
+                    echo ""
+                    echo "=== ArgoCD ==="
+                    kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' && echo ""
+                    echo "Get ArgoCD password with:"
+                    echo "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+                    echo ""
+                    echo "=== Cluster Nodes ==="
+                    kubectl get nodes
+                    echo "========================================="
                     """
                 }
             }
         }
 		
+    }
+    
+    post {
+        success {
+            echo 'Deployment pipeline completed successfully!'
+        }
+        failure {
+            echo 'Deployment pipeline failed! Check logs above.'
+        }
     }
 }

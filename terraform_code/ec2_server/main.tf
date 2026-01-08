@@ -135,10 +135,13 @@ resource "aws_security_group" "my-sg" {
 
 # STEP2: CREATE EC2 USING PEM & SG
 resource "aws_instance" "my-ec2" {
-  ami           = var.ami   
-  instance_type = var.instance_type
-  key_name      = var.key_name        
+  ami                    = var.ami   
+  instance_type          = var.instance_type
+  key_name               = var.key_name        
   vpc_security_group_ids = [aws_security_group.my-sg.id]
+  
+  #for AWS Systems Manager and AWS services access
+  iam_instance_profile   = "LabInstanceProfile"
   
   root_block_device {
     volume_size = var.volume_size
@@ -148,12 +151,11 @@ resource "aws_instance" "my-ec2" {
     Name = var.server_name
   }
   
-    # USING REMOTE-EXEC PROVISIONER TO INSTALL PACKAGES
+  # USING REMOTE-EXEC PROVISIONER TO INSTALL PACKAGES
   provisioner "remote-exec" {
-    # ESTABLISHING SSH CONNECTION WITH EC2
     connection {
       type        = "ssh"
-      private_key = file("./key.pem") # replace with your key-name 
+      private_key = file("~/.ssh/labsuser.pem") 
       user        = "ubuntu"
       host        = self.public_ip
     }
@@ -179,6 +181,12 @@ resource "aws_instance" "my-ec2" {
       "sudo usermod -aG docker ubuntu",
       "sudo chmod 777 /var/run/docker.sock",
       "docker --version",
+
+      # Install Grafana (as container)
+      "docker run -d --name grafana -p 3000:3000 grafana/grafana",
+
+      # Install Prometheus (as container)
+      "docker run -d --name prometheus -p 9090:9090 prom/prometheus",
 
       # Install SonarQube (as container)
       "docker run -d --name sonar -p 9000:9000 sonarqube:lts-community",
@@ -243,9 +251,12 @@ resource "aws_instance" "my-ec2" {
       "echo 'Jenkins Initial Password: '$pass''",
       "echo 'Access SonarQube Server here --> http://'$ip':9000'",
       "echo 'SonarQube Username & Password: admin'",
+      "echo 'Access Grafana Server here --> http://'$ip':3000'",
+      "echo 'Grafana Username & Password: admin / admin'",
+      "echo 'Access Prometheus Server here --> http://'$ip':9090'",
     ]
   }
-}  
+} 
 
 # STEP3: GET EC2 USER NAME AND PUBLIC IP 
 output "SERVER-SSH-ACCESS" {

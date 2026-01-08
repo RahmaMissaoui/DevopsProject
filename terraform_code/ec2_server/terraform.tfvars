@@ -1,12 +1,15 @@
-# DEFINE ALL YOUR VARIABLES HERE
+# AWS Region
+region_name = "us-east-1"
 
-instance_type = "t2.medium"
-ami           = "ami-0e86e20dae9224db8"   # Ubuntu 24.04
-key_name      = "key"                     # Replace with your key-name without .pem extension
-volume_size   = 30
-region_name   = "us-east-1"
-server_name   = "JENKINS-SERVER"
+# Instance Configuration
+instance_type = "t3.medium"  
+volume_size   = "30"         # Max 100GB per Learner Lab restrictions
 
-# Note: 
-# a. First create a pem-key manually from the AWS console
-# b. Copy it in the same directory as your terraform code
+# Use Learner Lab's vockey key pair
+key_name = "vockey"
+
+# Server Name
+server_name = "Jenkins-DevOps-Server"
+
+# AMI for Ubuntu 22.04 in us-east-1
+ami = "ami-0ecb62995f68bb549"  
