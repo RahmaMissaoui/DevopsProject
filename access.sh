@@ -1,37 +1,86 @@
 #!/bin/bash
-# This script is used to get the argocd, prometheus & grafana urls & credentials
+# This script retrieves URLs and credentials for ArgoCD, Prometheus & Grafana
 
-aws configure
-aws eks update-kubeconfig --region "us-east-1" --name "devops-cluster"
+echo "=== Configuring kubectl ==="
+aws eks update-kubeconfig --region us-east-1 --name devops-cluster
+
+echo ""
+echo "========================================="
+echo "RETRIEVING ACCESS INFORMATION"
+echo "========================================="
+
+# Wait a moment for services to be fully ready
+sleep 2
 
 # ArgoCD Access
-argo_url=$(kubectl get svc -n argocd | grep argocd-server | awk '{print$4}' | head -n 1)
-argo_initial_password=$(argocd admin initial-password -n argocd)
+echo ""
+echo "=== ArgoCD ==="
+ARGOCD_URL=$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+if [ -z "$ARGOCD_URL" ]; then
+    echo "⚠️  ArgoCD LoadBalancer is being provisioned..."
+    echo "Run: kubectl get svc argocd-server -n argocd"
+else
+    echo "ArgoCD URL: https://$ARGOCD_URL"
+fi
 
-# ArgoCD Credentials
-argo_user="admin"
+ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d)
+if [ -z "$ARGOCD_PASSWORD" ]; then
+    echo "⚠️  ArgoCD secret not found yet"
+else
+    echo "ArgoCD Username: admin"
+    echo "ArgoCD Password: $ARGOCD_PASSWORD"
+fi
 
-argo_password=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 --decode)
+# Prometheus Access
+echo ""
+echo "=== Prometheus ==="
+PROMETHEUS_URL=$(kubectl get svc kube-prometheus-stack-prometheus -n prometheus -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+if [ -z "$PROMETHEUS_URL" ]; then
+    echo "⚠️  Prometheus LoadBalancer is being provisioned..."
+    echo "Run: kubectl get svc kube-prometheus-stack-prometheus -n prometheus"
+else
+    echo "Prometheus URL: http://$PROMETHEUS_URL:9090"
+fi
 
-# Prometheus and Grafana URLs and credentials
-prometheus_url=$(kubectl get svc -n prometheus | grep stable-kube-prometheus-sta-prometheus | awk '{print $4}')
-grafana_url=$(kubectl get svc -n prometheus | grep stable-grafana | awk '{print $4}')
-grafana_user="admin"
-grafana_password=$(kubectl get secret stable-grafana -n prometheus -o jsonpath="{.data.admin-password}" | base64 --decode)
+# Grafana Access
+echo ""
+echo "=== Grafana ==="
+GRAFANA_URL=$(kubectl get svc kube-prometheus-stack-grafana -n prometheus -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+if [ -z "$GRAFANA_URL" ]; then
+    echo "⚠️  Grafana LoadBalancer is being provisioned..."
+    echo "Run: kubectl get svc kube-prometheus-stack-grafana -n prometheus"
+else
+    echo "Grafana URL: http://$GRAFANA_URL"
+fi
 
-# Print or use these variables
-echo "------------------------"
-echo "ArgoCD URL: $argo_url"
-echo "ArgoCD User: $argo_user"
-echo "ArgoCD Initial Password: $argo_initial_password" | head -n 1
-echo
-echo "Prometheus URL: $prometheus_url":9090
-echo
-echo "Grafana URL: $grafana_url"
-echo "Grafana User: $grafana_user"
-echo "Grafana Password: $grafana_password"
-echo "------------------------"
+GRAFANA_PASSWORD=$(kubectl get secret kube-prometheus-stack-grafana -n prometheus -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 -d)
+if [ -z "$GRAFANA_PASSWORD" ]; then
+    echo "⚠️  Grafana secret not found"
+    echo "Default Password: prom-operator"
+else
+    echo "Grafana Username: admin"
+    echo "Grafana Password: $GRAFANA_PASSWORD"
+fi
 
-# Run below commands
-# chmod a+x access.sh
-# ./access.sh
+# Application Access (if deployed)
+echo ""
+echo "=== Application ==="
+APP_URL=$(kubectl get svc devops-app -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+if [ -z "$APP_URL" ]; then
+    echo "⚠️  Application not deployed or LoadBalancer provisioning"
+else
+    echo "Application URL: http://$APP_URL:3000"
+fi
+
+# Cluster Info
+echo ""
+echo "=== Cluster Information ==="
+echo "Cluster: devops-cluster"
+echo "Region: us-east-1"
+kubectl get nodes --no-headers 2>/dev/null | awk '{print "Node: " $1 " - Status: " $2}'
+
+echo ""
+echo "========================================="
+echo "NOTE: LoadBalancers take 2-5 minutes to provision"
+echo "If URLs are missing, wait a few minutes and run again"
+echo "========================================="
